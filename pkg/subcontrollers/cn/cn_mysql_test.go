@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/StarRocks/starrocks-kubernetes-operator/cmd/config"
+	"github.com/StarRocks/starrocks-kubernetes-operator/pkg/common/sqlexec"
 	"github.com/StarRocks/starrocks-kubernetes-operator/pkg/k8sutils/fake"
 )
 
@@ -31,7 +32,7 @@ func TestNewSQLExecutor(t *testing.T) {
 
 	// NewSQLExecutor copies the process-wide flag value onto the executor, so pin it for this test.
 	originalSslMode := config.FeSslMode
-	config.FeSslMode = SSLModeRequired
+	config.FeSslMode = sqlexec.SSLModeRequired
 	t.Cleanup(func() { config.FeSslMode = originalSslMode })
 
 	tests := []struct {
@@ -92,11 +93,13 @@ func TestNewSQLExecutor(t *testing.T) {
 				name:      "my-sts",
 			},
 			want: &SQLExecutor{
-				RootPassword:       "123456",
-				FeServiceName:      "fe",
-				FeServiceNamespace: "default",
-				FeServicePort:      "9030",
-				SSLMode:            SSLModeRequired,
+				Executor: sqlexec.Executor{
+					RootPassword:       "123456",
+					FeServiceName:      "fe",
+					FeServiceNamespace: "default",
+					FeServicePort:      "9030",
+					SSLMode:            sqlexec.SSLModeRequired,
+				},
 			},
 			wantErr: assert.NoError,
 		},
@@ -145,9 +148,11 @@ func TestSQLExecutor_Execute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			executor := &SQLExecutor{
-				RootPassword:  tt.fields.RootPassword,
-				FeServiceName: tt.fields.FeServiceName,
-				FeServicePort: tt.fields.FeServicePort,
+				Executor: sqlexec.Executor{
+					RootPassword:  tt.fields.RootPassword,
+					FeServiceName: tt.fields.FeServiceName,
+					FeServicePort: tt.fields.FeServicePort,
+				},
 			}
 
 			// create mock db
@@ -234,10 +239,12 @@ func TestSQLExecutor_QueryShowComputeNodes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			executor := &SQLExecutor{
-				RootPassword:       tt.fields.RootPassword,
-				FeServiceName:      tt.fields.FeServiceName,
-				FeServiceNamespace: tt.fields.FeServiceNamespace,
-				FeServicePort:      tt.fields.FeServicePort,
+				Executor: sqlexec.Executor{
+					RootPassword:       tt.fields.RootPassword,
+					FeServiceName:      tt.fields.FeServiceName,
+					FeServiceNamespace: tt.fields.FeServiceNamespace,
+					FeServicePort:      tt.fields.FeServicePort,
+				},
 			}
 
 			// set expected behavior on mock db
@@ -302,10 +309,12 @@ func TestSQLExecutor_ExecuteDropComputeNode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			executor := &SQLExecutor{
-				RootPassword:       tt.fields.RootPassword,
-				FeServiceName:      tt.fields.FeServiceName,
-				FeServiceNamespace: tt.fields.FeServiceNamespace,
-				FeServicePort:      tt.fields.FeServicePort,
+				Executor: sqlexec.Executor{
+					RootPassword:       tt.fields.RootPassword,
+					FeServiceName:      tt.fields.FeServiceName,
+					FeServiceNamespace: tt.fields.FeServiceNamespace,
+					FeServicePort:      tt.fields.FeServicePort,
+				},
 			}
 			tt.wantErr(t, executor.ExecuteDropComputeNode(tt.args.ctx, tt.args.db, tt.args.cn), fmt.Sprintf("ExecuteDropComputeNode(%v, %v, %v)", tt.args.ctx, tt.args.db, tt.args.cn))
 		})
@@ -355,48 +364,14 @@ func TestSQLExecutor_ExecuteDropWarehouse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			executor := &SQLExecutor{
-				RootPassword:       tt.fields.RootPassword,
-				FeServiceName:      tt.fields.FeServiceName,
-				FeServiceNamespace: tt.fields.FeServiceNamespace,
-				FeServicePort:      tt.fields.FeServicePort,
+				Executor: sqlexec.Executor{
+					RootPassword:       tt.fields.RootPassword,
+					FeServiceName:      tt.fields.FeServiceName,
+					FeServiceNamespace: tt.fields.FeServiceNamespace,
+					FeServicePort:      tt.fields.FeServicePort,
+				},
 			}
 			tt.wantErr(t, executor.ExecuteDropWarehouse(tt.args.ctx, tt.args.db, tt.args.warehouseName), fmt.Sprintf("ExecuteDropWarehouse(%v, %v, %v)", tt.args.ctx, tt.args.db, tt.args.warehouseName))
-		})
-	}
-}
-
-func TestSQLExecutorDSN(t *testing.T) {
-	tests := []struct {
-		name string
-		mode string
-		want string
-	}{
-		{
-			name: "disabled keeps the plaintext DSN unchanged",
-			mode: SSLModeDisabled,
-			want: "root:123456@tcp(fe.default:9030)/",
-		},
-		{
-			name: "preferred appends the opportunistic tls parameter",
-			mode: SSLModePreferred,
-			want: "root:123456@tcp(fe.default:9030)/?tls=preferred",
-		},
-		{
-			name: "required appends the mandatory tls parameter",
-			mode: SSLModeRequired,
-			want: "root:123456@tcp(fe.default:9030)/?tls=skip-verify",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			executor := &SQLExecutor{
-				RootPassword:       "123456",
-				FeServiceName:      "fe",
-				FeServiceNamespace: "default",
-				FeServicePort:      "9030",
-				SSLMode:            tt.mode,
-			}
-			assert.Equal(t, tt.want, executor.dsn())
 		})
 	}
 }

@@ -1,4 +1,4 @@
-package cn
+package sqlexec
 
 import (
 	"fmt"

@@ -6376,6 +6376,8 @@ spec:
                       - name
                       type: object
                     type: array
+                  leaderAwareRollingUpdate:
+                    type: boolean
                   lifecycle:
                     properties:
                       postStart:

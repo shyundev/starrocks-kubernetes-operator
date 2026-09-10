@@ -18,6 +18,7 @@ package fe
 
 import (
 	"context"
+	"errors"
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
@@ -43,6 +44,9 @@ import (
 type FeController struct {
 	Client   client.Client
 	Recorder record.EventRecorder
+
+	// frontendClientFactory builds the FE client of the leader aware rolling update; nil means the SQL client.
+	frontendClientFactory FrontendClientFactory
 }
 
 // New construct a FeController.
@@ -70,7 +74,9 @@ func (fc *FeController) SyncCluster(ctx context.Context, src *srapi.StarRocksClu
 	var err error
 	defer func() {
 		// we do not record an event if the error is nil, because this will cause too many events to be recorded.
-		if err != nil {
+		// A RequeueError is not a failure either: the rolling update records its own events.
+		var requeue *subcontrollers.RequeueError
+		if err != nil && !errors.As(err, &requeue) {
 			fc.Recorder.Event(src, corev1.EventTypeWarning, "SyncFeFailed", err.Error())
 		}
 	}()
@@ -109,6 +115,10 @@ func (fc *FeController) SyncCluster(ctx context.Context, src *srapi.StarRocksClu
 		return err
 	}
 	expectSts := statefulset.MakeStatefulset(object, feSpec, podTemplateSpec)
+	if feSpec.LeaderAwareRollingUpdate {
+		// The operator replaces the pods itself, see reconcileLeaderAwareRollingUpdate.
+		expectSts.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{Type: appsv1.OnDeleteStatefulSetStrategyType}
+	}
 
 	drSpec := src.Spec.DisasterRecovery
 	drStatus := src.Status.DisasterRecoveryStatus
@@ -139,6 +149,11 @@ func (fc *FeController) SyncCluster(ctx context.Context, src *srapi.StarRocksClu
 
 	if err = k8sutils.ApplyService(ctx, fc.Client, &svc, rutils.ServiceDeepEqual); err != nil {
 		logger.Error(err, "deploy external service failed", "externalService", svc)
+		return err
+	}
+
+	if feSpec.LeaderAwareRollingUpdate && !shouldEnterDRMode {
+		err = fc.reconcileLeaderAwareRollingUpdate(ctx, src, feConfig)
 		return err
 	}
 
@@ -263,8 +278,9 @@ func CheckFEReady(ctx context.Context, k8sClient client.Client, clusterNamespace
 
 // CheckFEFullyRolledOut checks if the FE StatefulSet is fully rolled out.
 // This is a stricter check than CheckFEReady - it ensures:
-// 1. All FE replicas are ready (ReadyReplicas == Replicas)
-// 2. StatefulSet revision is complete (UpdateRevision == CurrentRevision)
+//  1. All FE replicas are ready (ReadyReplicas == Replicas)
+//  2. StatefulSet revision is complete (UpdateRevision == CurrentRevision, or every pod at UpdateRevision
+//     for the OnDelete strategy the leader aware rolling update uses)
 //
 // Use this check before updating BE/CN to ensure a bad FE rollout doesn't cascade
 // to other components. If FE is stuck in a bad state, BE/CN updates will be paused.
@@ -290,7 +306,7 @@ func CheckFEFullyRolledOut(ctx context.Context, k8sClient client.Client, cluster
 	}
 
 	// Check if revision is fully rolled out
-	if sts.Status.UpdateRevision != sts.Status.CurrentRevision {
+	if !statefulset.RevisionRolledOut(&sts) {
 		logger.Info("FE StatefulSet rolling update in progress",
 			"currentRevision", sts.Status.CurrentRevision,
 			"updateRevision", sts.Status.UpdateRevision,

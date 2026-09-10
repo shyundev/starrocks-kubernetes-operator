@@ -39,12 +39,20 @@ rules:
   - ""
   resources:
   - endpoints
-  - pods
   - secrets
   verbs:
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+  - delete
 - apiGroups:
   - starrocks.com
   resources:

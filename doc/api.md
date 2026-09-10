@@ -1716,6 +1716,28 @@ StarRocksComponentSpec
 <p>feEnvVars is a slice of environment variables that are added to the pods, the default is empty.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>leaderAwareRollingUpdate</code><br/>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>LeaderAwareRollingUpdate makes the operator replace the FE pods itself, one at a time, instead of
+leaving the order to the StatefulSet controller: every follower and observer FE is replaced first
+and the leader FE last, so a rolling update triggers at most one leader election. Before the leader
+is replaced the operator asks FE to hand leadership over to an already updated follower with
+ALTER SYSTEM TRANSFER LEADER; when the FE version or run mode does not support it, the leader is
+restarted and one election happens.
+The operator runs SHOW FRONTENDS through the FE service, so when root has a password it must be
+provided through the MYSQL_PWD environment variable in feEnvVars, exactly as for CN scale-in.
+When the query fails the update pauses and a warning event is recorded.
+While it is true the FE StatefulSet uses the OnDelete update strategy and updateStrategy is ignored.
+Defaults to false.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="starrocks.com/v1.StarRocksFeStatus">StarRocksFeStatus
@@ -2701,5 +2723,5 @@ AutoScalingPolicy
 <hr/>
 <p><em>
 Generated with <code>gen-crd-api-reference-docs</code>
-on git commit <code>7027f915</code>.
+on git commit <code>4fc308d</code>.
 </em></p>

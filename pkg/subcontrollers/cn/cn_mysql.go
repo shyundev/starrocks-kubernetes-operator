@@ -8,12 +8,12 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
-	_ "github.com/go-sql-driver/mysql" // import mysql driver
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/StarRocks/starrocks-kubernetes-operator/cmd/config"
+	"github.com/StarRocks/starrocks-kubernetes-operator/pkg/common/sqlexec"
 	"github.com/StarRocks/starrocks-kubernetes-operator/pkg/k8sutils"
 	"github.com/StarRocks/starrocks-kubernetes-operator/pkg/k8sutils/templates/object"
 )
@@ -26,15 +26,7 @@ const (
 // Component CN needs to connect to mysql and execute sql statements. E.g.: When StarRocksWarehouse is deleted, the
 // related 'DROP WAREHOUSE <name>' statement needs to be executed.
 type SQLExecutor struct {
-	RootPassword       string
-	FeServiceName      string
-	FeServiceNamespace string
-	FeServicePort      string
-
-	// SSLMode decides whether the connection to FE negotiates TLS; see the SSLMode* constants.
-	// It is captured per executor rather than read from the flag at connect time so that tests can
-	// exercise each mode without mutating process-wide state.
-	SSLMode string
+	sqlexec.Executor
 }
 
 // NewSQLExecutor creates a SQLExecutor instance. It will get the root password, fe service name, and fe service port
@@ -79,58 +71,14 @@ func NewSQLExecutor(ctx context.Context, k8sClient client.Client, namespace, cnS
 	}
 
 	return &SQLExecutor{
-		RootPassword:       rootPassword,
-		FeServiceName:      feServiceName,
-		FeServiceNamespace: namespace,
-		FeServicePort:      feServicePort,
-		SSLMode:            config.FeSslMode,
+		Executor: sqlexec.Executor{
+			RootPassword:       rootPassword,
+			FeServiceName:      feServiceName,
+			FeServiceNamespace: namespace,
+			FeServicePort:      feServicePort,
+			SSLMode:            config.FeSslMode,
+		},
 	}, nil
-}
-
-// dsn builds the go-sql-driver DSN for the FE connection. Both ExecuteContext and QueryContext go
-// through it so the SSL mode can never be honored by one path and skipped by the other.
-func (executor *SQLExecutor) dsn() string {
-	return fmt.Sprintf("root:%s@tcp(%s.%s:%s)/%s",
-		executor.RootPassword, executor.FeServiceName, executor.FeServiceNamespace,
-		executor.FeServicePort, sslModeDSNSuffix(executor.SSLMode))
-}
-
-// ExecuteContext sql statements. Every time a SQL statement needs to be executed, a new sql.DB instance will be created.
-// This is because SQL statements are executed infrequently.
-func (executor *SQLExecutor) ExecuteContext(ctx context.Context, db *sql.DB, statement string) error {
-	var err error
-	if db == nil {
-		db, err = sql.Open("mysql", executor.dsn())
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-	}
-
-	_, err = db.ExecContext(ctx, statement)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (executor *SQLExecutor) QueryContext(ctx context.Context, db *sql.DB, statements string) (*sql.Rows, error) {
-	var err error
-	if db == nil {
-		db, err = sql.Open("mysql", executor.dsn())
-		if err != nil {
-			return nil, err
-		}
-		defer db.Close()
-	}
-
-	rows, err := db.QueryContext(ctx, statements)
-	if err != nil {
-		return nil, err
-	}
-
-	return rows, nil
 }
 
 type ShowComputeNodesResult struct {

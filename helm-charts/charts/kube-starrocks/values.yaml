@@ -677,6 +677,16 @@ starrocks:
     # only by API servers that are running with the MaxUnavailableStatefulSet feature gate enabled.
     # See https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#maximum-unavailable-pods for more details.
     maxUnavailablePods:
+    # leaderAwareRollingUpdate makes the operator replace the FE pods itself, one at a time: every follower and
+    # observer FE first and the leader FE last, so that a rolling update triggers at most one leader election.
+    # Before the leader is replaced the operator asks FE to hand leadership over to an already updated follower
+    # (ALTER SYSTEM TRANSFER LEADER); when the FE version or run mode does not support it, the leader is restarted
+    # and one election happens.
+    # The operator runs SHOW FRONTENDS through the FE service, so when root has a password it must be provided
+    # through the MYSQL_PWD environment variable in feEnvVars, exactly as for CN scale-in. When the query fails the
+    # update pauses and a warning event is recorded.
+    # While it is true the FE StatefulSet uses the OnDelete update strategy and maxUnavailablePods is ignored.
+    leaderAwareRollingUpdate: false
     # Share a single process namespace between all the containers in a pod.
     # When this is set, containers will be able to view and signal processes from other containers
     # in the same pod, and the first process in each container will not be assigned PID 1.

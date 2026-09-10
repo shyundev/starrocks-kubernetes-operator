@@ -355,6 +355,65 @@ func TestCheckFEFullyRolledOut(t *testing.T) {
 			want: true,
 		},
 		{
+			// The statefulset controller never sets currentRevision for OnDelete: pods at the update revision decide.
+			name: "OnDelete statefulset with every pod at the update revision",
+			args: args{
+				ctx: context.Background(),
+				k8sClient: fake.NewFakeClient(srapi.Scheme, &appsv1.StatefulSet{
+					TypeMeta: metav1.TypeMeta{
+						Kind:       "StatefulSet",
+						APIVersion: appsv1.SchemeGroupVersion.String(),
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kube-starrocks-fe",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						Replicas:       &replicas,
+						UpdateStrategy: appsv1.StatefulSetUpdateStrategy{Type: appsv1.OnDeleteStatefulSetStrategyType},
+					},
+					Status: appsv1.StatefulSetStatus{
+						ReadyReplicas:   3,
+						UpdatedReplicas: 3,
+						CurrentRevision: "v1",
+						UpdateRevision:  "v2",
+					},
+				}),
+				clusterNamespace: "default",
+				clusterName:      "kube-starrocks",
+			},
+			want: true,
+		},
+		{
+			name: "OnDelete statefulset with a pod still at the old revision",
+			args: args{
+				ctx: context.Background(),
+				k8sClient: fake.NewFakeClient(srapi.Scheme, &appsv1.StatefulSet{
+					TypeMeta: metav1.TypeMeta{
+						Kind:       "StatefulSet",
+						APIVersion: appsv1.SchemeGroupVersion.String(),
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kube-starrocks-fe",
+						Namespace: "default",
+					},
+					Spec: appsv1.StatefulSetSpec{
+						Replicas:       &replicas,
+						UpdateStrategy: appsv1.StatefulSetUpdateStrategy{Type: appsv1.OnDeleteStatefulSetStrategyType},
+					},
+					Status: appsv1.StatefulSetStatus{
+						ReadyReplicas:   3,
+						UpdatedReplicas: 2,
+						CurrentRevision: "v1",
+						UpdateRevision:  "v2",
+					},
+				}),
+				clusterNamespace: "default",
+				clusterName:      "kube-starrocks",
+			},
+			want: false,
+		},
+		{
 			name: "statefulset with nil replicas - should return true when revisions match",
 			args: args{
 				ctx: context.Background(),

@@ -162,6 +162,20 @@ type StarRocksFeSpec struct {
 	// +optional
 	// feEnvVars is a slice of environment variables that are added to the pods, the default is empty.
 	FeEnvVars []corev1.EnvVar `json:"feEnvVars,omitempty"`
+
+	// +optional
+	// LeaderAwareRollingUpdate makes the operator replace the FE pods itself, one at a time, instead of
+	// leaving the order to the StatefulSet controller: every follower and observer FE is replaced first
+	// and the leader FE last, so a rolling update triggers at most one leader election. Before the leader
+	// is replaced the operator asks FE to hand leadership over to an already updated follower with
+	// ALTER SYSTEM TRANSFER LEADER; when the FE version or run mode does not support it, the leader is
+	// restarted and one election happens.
+	// The operator runs SHOW FRONTENDS through the FE service, so when root has a password it must be
+	// provided through the MYSQL_PWD environment variable in feEnvVars, exactly as for CN scale-in.
+	// When the query fails the update pauses and a warning event is recorded.
+	// While it is true the FE StatefulSet uses the OnDelete update strategy and updateStrategy is ignored.
+	// Defaults to false.
+	LeaderAwareRollingUpdate bool `json:"leaderAwareRollingUpdate,omitempty"`
 }
 
 // StarRocksBeSpec defines the desired state of be.

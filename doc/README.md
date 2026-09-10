@@ -19,6 +19,7 @@ Table Of Content
     - [Load Data Using Stream Load](./load_data_using_stream_load_howto.md)
     - [Build Your Own Container Image](./build_your_own_container_image_howto.md)
     - [Connect the Operator to an SSL-Enabled FE](./connect_to_ssl_enabled_fe_howto.md)
+    - [Roll FE Pods Out Leader-Last](./leader_aware_fe_rolling_update_howto.md)
 - Integration
     - [Prometheus And Grafana](./integration/integration-prometheus-grafana.md)
     - [Datadog](./integration/integration-with-datadog.md)

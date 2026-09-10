@@ -18,7 +18,9 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,7 +50,7 @@ type StarRocksClusterReconciler struct {
 // +kubebuilder:rbac:groups=starrocks.com,resources=starrocksclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=starrocks.com,resources=starrocksclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=starrocks.com,resources=starrocksclusters/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
@@ -88,10 +90,20 @@ func (r *StarRocksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// subControllers reconcile for create or update component.
+	var requeueAfter time.Duration
 	for _, rc := range r.Scs {
 		kvs := []interface{}{"subController", rc.GetControllerName()}
 		logger.Info("sub controller sync spec", kvs...)
 		if err = rc.SyncCluster(ctx, src); err != nil {
+			var requeue *subcontrollers.RequeueError
+			if errors.As(err, &requeue) {
+				logger.Info("sub controller asks to reconcile again",
+					append(kvs, "after", requeue.After.String(), "reason", requeue.Reason)...)
+				if requeueAfter == 0 || requeue.After < requeueAfter {
+					requeueAfter = requeue.After
+				}
+				continue
+			}
 			logger.Error(err, "sub controller reconciles spec failed", kvs...)
 			handleSyncClusterError(src, rc, err)
 			if updateError := r.UpdateStarRocksClusterStatus(ctx, src); updateError != nil {
@@ -122,7 +134,7 @@ func (r *StarRocksClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 	logger.Info("reconcile StarRocksCluster success")
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // UpdateStarRocksClusterStatus update the status of src.

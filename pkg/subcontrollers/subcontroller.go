@@ -20,6 +20,8 @@ package subcontrollers
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -48,6 +50,19 @@ type ClusterSubController interface {
 }
 
 type GetEventRecorderForFunc func(name string) record.EventRecorder
+
+// RequeueError is returned by SyncCluster when the work is not finished and what it waits for does not
+// necessarily show up as a change of a watched object, e.g. an FE pod that is Ready but has not reported
+// itself alive to the leader yet. The reconciler does not treat it as a failure: it runs the remaining
+// sub controllers, updates the status and reconciles again after the delay.
+type RequeueError struct {
+	After  time.Duration
+	Reason string
+}
+
+func (e *RequeueError) Error() string {
+	return fmt.Sprintf("reconcile again after %s: %s", e.After, e.Reason)
+}
 
 type WarehouseSubController interface {
 	// ClearWarehouse will clear all resource about warehouse.

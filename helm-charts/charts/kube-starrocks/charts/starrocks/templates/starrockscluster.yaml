@@ -39,6 +39,9 @@ spec:
       rollingUpdate:
         maxUnavailable: {{ .Values.starrocksFESpec.maxUnavailablePods }}
     {{- end }}
+    {{- if .Values.starrocksFESpec.leaderAwareRollingUpdate }}
+    leaderAwareRollingUpdate: {{ .Values.starrocksFESpec.leaderAwareRollingUpdate }}
+    {{- end }}
     {{- /*
     support both resources and resource for backward compatibility
     */}}
