@@ -897,6 +897,136 @@ func TestCnController_SyncComputeNodesInFE(t *testing.T) {
 	}
 }
 
+func TestCnController_waitForAliveComputeNodes(t *testing.T) {
+	newSTS := func(name string, replicas int32) *appsv1.StatefulSet {
+		return &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: rutils.GetInt32Pointer(replicas),
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name: "cn",
+								Env: []corev1.EnvVar{
+									{Name: "FE_SERVICE_NAME", Value: "fe"},
+									{Name: "FE_QUERY_PORT", Value: "9030"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	newRows := func(warehouse string, alive ...string) *sqlmock.Rows {
+		rows := sqlmock.NewRows([]string{"ComputeNodeId", "IP", "HeartbeatPort", "Alive", "WarehouseName"})
+		for i, a := range alive {
+			rows.AddRow([]byte(fmt.Sprintf("%d", i)),
+				[]byte(fmt.Sprintf("test-cn-%d.test-cn-search.default.svc.cluster.local", i)),
+				[]byte("9050"), []byte(a), []byte(warehouse))
+		}
+		return rows
+	}
+	clusterObject := object.StarRocksObject{
+		ObjectMeta: &metav1.ObjectMeta{
+			Name:      "test",
+			Namespace: "default",
+		},
+		ClusterName:           "test",
+		Kind:                  object.StarRocksClusterKind,
+		SubResourcePrefixName: "test",
+	}
+	warehouseObject := object.StarRocksObject{
+		ObjectMeta: &metav1.ObjectMeta{
+			Name:      "wh-1",
+			Namespace: "default",
+		},
+		ClusterName:           "test",
+		Kind:                  object.StarRocksWarehouseKind,
+		SubResourcePrefixName: "wh-1-warehouse",
+		IsWarehouseObject:     true,
+	}
+
+	tests := []struct {
+		name       string
+		object     object.StarRocksObject
+		sts        *appsv1.StatefulSet
+		rows       *sqlmock.Rows
+		queryErr   error
+		wantPhase  srapi.ComponentPhase
+		wantReason string
+	}{
+		{
+			name:      "all compute nodes are alive",
+			object:    clusterObject,
+			sts:       newSTS("test-cn", 2),
+			rows:      newRows("default_warehouse", "true", "true"),
+			wantPhase: srapi.ComponentRunning,
+		},
+		{
+			name:       "a compute node is registered but not alive yet",
+			object:     clusterObject,
+			sts:        newSTS("test-cn", 2),
+			rows:       newRows("default_warehouse", "true", "false"),
+			wantPhase:  srapi.ComponentReconciling,
+			wantReason: "waiting for compute nodes to be alive in FE: 1 of 2 alive in warehouse default_warehouse",
+		},
+		{
+			name:       "a compute node is not registered yet",
+			object:     clusterObject,
+			sts:        newSTS("test-cn", 2),
+			rows:       newRows("default_warehouse", "true"),
+			wantPhase:  srapi.ComponentReconciling,
+			wantReason: "waiting for compute nodes to be alive in FE: 1 of 2 alive in warehouse default_warehouse",
+		},
+		{
+			name:       "compute nodes of a warehouse are counted under the warehouse name in FE",
+			object:     warehouseObject,
+			sts:        newSTS("wh-1-warehouse-cn", 1),
+			rows:       newRows("default_warehouse", "true"),
+			wantPhase:  srapi.ComponentReconciling,
+			wantReason: "waiting for compute nodes to be alive in FE: 0 of 1 alive in warehouse wh_1",
+		},
+		{
+			name:      "FE can not be queried, the phase is left untouched",
+			object:    clusterObject,
+			sts:       newSTS("test-cn", 2),
+			queryErr:  errors.New("dial tcp: connection refused"),
+			wantPhase: srapi.ComponentRunning,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			if tt.queryErr != nil {
+				mock.ExpectQuery(ShowComputeNodesStatement).WillReturnError(tt.queryErr)
+			} else {
+				mock.ExpectQuery(ShowComputeNodesStatement).WillReturnRows(tt.rows)
+			}
+
+			cc := &CnController{
+				k8sClient: fake.NewFakeClient(srapi.Scheme, tt.sts),
+			}
+			cnStatus := &srapi.StarRocksCnStatus{
+				StarRocksComponentStatus: srapi.StarRocksComponentStatus{
+					Phase: srapi.ComponentRunning,
+				},
+			}
+			cc.waitForAliveComputeNodes(context.Background(), tt.object, tt.sts, cnStatus, db)
+
+			assert.Equal(t, tt.wantPhase, cnStatus.Phase)
+			assert.Equal(t, tt.wantReason, cnStatus.Reason)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
 func TestGenerateInternalService(t *testing.T) {
 	type args struct {
 		object          object.StarRocksObject

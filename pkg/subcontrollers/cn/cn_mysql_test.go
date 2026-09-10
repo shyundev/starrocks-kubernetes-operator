@@ -254,6 +254,29 @@ func TestSQLExecutor_QueryShowComputeNodes(t *testing.T) {
 	}
 }
 
+func TestSQLExecutor_QueryShowComputeNodes_Alive(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	mock.ExpectQuery(ShowComputeNodesStatement).WillReturnRows(
+		sqlmock.NewRows([]string{"ComputeNodeId", "IP", "HeartbeatPort", "Alive", "WarehouseName"}).
+			AddRow([]byte("10001"), []byte("cn-0.cn-search.default.svc.cluster.local"), []byte("9050"), []byte("true"), []byte("default_warehouse")).
+			AddRow([]byte("10002"), []byte("cn-1.cn-search.default.svc.cluster.local"), []byte("9050"), []byte("false"), []byte("default_warehouse")).
+			AddRow([]byte("10003"), []byte("cn-0.cn-search.default.svc.cluster.local"), []byte("9050"), []byte("true"), []byte("wh1")),
+	)
+
+	executor := &SQLExecutor{FeServiceName: "localhost", FeServicePort: "9030"}
+	result, err := executor.QueryShowComputeNodes(context.Background(), db)
+	require.NoError(t, err)
+
+	assert.True(t, result.ComputeNodesByWarehouse["default_warehouse"][0].Alive)
+	assert.False(t, result.ComputeNodesByWarehouse["default_warehouse"][1].Alive)
+	assert.Equal(t, 1, result.AliveCount("default_warehouse"))
+	assert.Equal(t, 1, result.AliveCount("wh1"))
+	assert.Equal(t, 0, result.AliveCount("unknown"))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestSQLExecutor_ExecuteDropComputeNode(t *testing.T) {
 	type fields struct {
 		RootPassword       string

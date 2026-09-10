@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
@@ -333,7 +334,60 @@ func (cc *CnController) UpdateStatus(ctx context.Context, object object.StarRock
 		return err
 	}
 
+	if cnStatus.Phase == srapi.ComponentRunning {
+		cc.waitForAliveComputeNodes(ctx, object, &actualSTS, cnStatus, nil)
+	}
+
 	return nil
+}
+
+// waitForAliveComputeNodes keeps the phase at reconciling until FE reports every compute node of the
+// StatefulSet as alive.
+//
+// A CN pod turns ready as soon as its HTTP server answers /api/health, but FE marks the node alive only
+// after the next heartbeat round trip succeeds. A phase computed from pod readiness alone therefore says
+// running while queries still fail with "No alive backend or compute node in warehouse".
+//
+// When FE cannot be queried the phase is left untouched, so a cluster whose FE is unreachable from the
+// operator is reported exactly as before; the attempt is bounded so that such a cluster does not hold
+// the reconcile for the TCP connect timeout. db is only passed by tests; nil opens a connection to FE.
+func (cc *CnController) waitForAliveComputeNodes(ctx context.Context, object object.StarRocksObject,
+	actualSTS *appsv1.StatefulSet, cnStatus *srapi.StarRocksCnStatus, db *sql.DB) {
+	logger := logr.FromContextOrDiscard(ctx)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	expectReplicas := int32(1)
+	if actualSTS.Spec.Replicas != nil {
+		expectReplicas = *actualSTS.Spec.Replicas
+	}
+	if expectReplicas == 0 {
+		return
+	}
+
+	executor, err := NewSQLExecutor(ctx, cc.k8sClient, object.Namespace, actualSTS.Name)
+	if err != nil {
+		logger.Error(err, "new SQL executor failed, skip checking whether compute nodes are alive in FE")
+		return
+	}
+	result, err := executor.QueryShowComputeNodes(ctx, db)
+	if err != nil {
+		logger.Error(err, "query SHOW COMPUTE NODES failed, skip checking whether compute nodes are alive in FE",
+			"sql", ShowComputeNodesStatement)
+		return
+	}
+
+	warehouseName := warehouseNameInFE(object)
+	alive := result.AliveCount(warehouseName)
+	if alive >= int(expectReplicas) {
+		return
+	}
+
+	cnStatus.Phase = srapi.ComponentReconciling
+	cnStatus.Reason = fmt.Sprintf("waiting for compute nodes to be alive in FE: %d of %d alive in warehouse %s",
+		alive, expectReplicas, warehouseName)
+	logger.Info("not all compute nodes are alive in FE, keep the phase reconciling",
+		"warehouse", warehouseName, "alive", alive, "expectReplicas", expectReplicas)
 }
 
 // ClearWarehouse clear the warehouse resource. It is different from ClearResources, which need to clear the
@@ -611,11 +665,7 @@ func (cc *CnController) SyncComputeNodesInFE(ctx context.Context, object object.
 		logger.Error(err, "query SHOW COMPUTE NODES failed", "sql", "SHOW COMPUTE NODES")
 		return err
 	}
-	warehouseNameInFE := "default_warehouse"
-	if object.IsWarehouseObject {
-		warehouseNameInFE = object.GetWarehouseNameInFE()
-	}
-	computeNodes := result.ComputeNodesByWarehouse[warehouseNameInFE]
+	computeNodes := result.ComputeNodesByWarehouse[warehouseNameInFE(object)]
 	if len(computeNodes) > int(expectReplicas) {
 		for i := len(computeNodes) - 1; i >= int(expectReplicas); i-- {
 			err = executor.ExecuteDropComputeNode(ctx, db, computeNodes[i])
@@ -628,6 +678,14 @@ func (cc *CnController) SyncComputeNodesInFE(ctx context.Context, object object.
 	}
 
 	return nil
+}
+
+// warehouseNameInFE returns the name under which FE lists the compute nodes of the object.
+func warehouseNameInFE(object object.StarRocksObject) string {
+	if object.IsWarehouseObject {
+		return object.GetWarehouseNameInFE()
+	}
+	return "default_warehouse"
 }
 
 func generateInternalService(object object.StarRocksObject, cnSpec *srapi.StarRocksCnSpec,

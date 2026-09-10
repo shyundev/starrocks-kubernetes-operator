@@ -54,6 +54,9 @@ func NewSQLExecutor(ctx context.Context, k8sClient client.Client, namespace, cnS
 		&sts); err != nil {
 		return nil, err
 	}
+	if len(sts.Spec.Template.Spec.Containers) == 0 {
+		return nil, fmt.Errorf("statefulset %s/%s has no container", namespace, cnSTSName)
+	}
 
 	var err error
 	for _, envVar := range sts.Spec.Template.Spec.Containers[0].Env {
@@ -142,8 +145,22 @@ type ComputeNode struct {
 	FQDN          string
 	HeartbeatPort string
 	WarehouseName string
+	// Alive is FE's view of the node: it turns true only after FE's heartbeat to the node succeeds,
+	// which happens after the pod passes its readiness probe.
+	Alive bool
 
 	index int // the index is from FQDN, used for sorting
+}
+
+// AliveCount returns how many compute nodes of the warehouse FE reports as alive.
+func (result *ShowComputeNodesResult) AliveCount(warehouseName string) int {
+	count := 0
+	for _, computeNode := range result.ComputeNodesByWarehouse[warehouseName] {
+		if computeNode.Alive {
+			count++
+		}
+	}
+	return count
 }
 
 func (executor *SQLExecutor) QueryShowComputeNodes(ctx context.Context, db *sql.DB) (*ShowComputeNodesResult, error) {
@@ -199,6 +216,8 @@ func (executor *SQLExecutor) QueryShowComputeNodes(ctx context.Context, db *sql.
 				computeNode.HeartbeatPort = string(values[i].([]byte))
 			case "WarehouseName":
 				computeNode.WarehouseName = string(values[i].([]byte))
+			case "Alive":
+				computeNode.Alive = strings.EqualFold(string(values[i].([]byte)), "true")
 			}
 		}
 		result.ComputeNodesByWarehouse[computeNode.WarehouseName] = append(result.ComputeNodesByWarehouse[computeNode.WarehouseName], computeNode)
