@@ -198,6 +198,77 @@ func TestMountConfigMaps(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "test mount configmaps with colliding volume names",
+			args: args{
+				configmaps: []v1.ConfigMapReference{
+					{
+						Name:      "hive-catalog-conf",
+						MountPath: "/opt/starrocks/fe/conf/hive-site.xml",
+						SubPath:   "hive-site.xml",
+					},
+					{
+						Name:      "hive-catalog-conf",
+						MountPath: "/opt/starrocks/fe/conf/yarn-site.xml",
+						SubPath:   "yarn-site.xml",
+					},
+					{
+						Name:      "hive-catalog-conf",
+						MountPath: "/opt/starrocks/fe/conf/core-site.xml",
+						SubPath:   "core-site.xml",
+					},
+				},
+			},
+			want: []corev1.Volume{
+				{
+					Name: "hive-catalog-conf-1416061474",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "hive-catalog-conf",
+							},
+						},
+					},
+				},
+				{
+					Name: "hive-catalog-conf-1416553822",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "hive-catalog-conf",
+							},
+						},
+					},
+				},
+				{
+					Name: "hive-catalog-conf-5162",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: "hive-catalog-conf",
+							},
+						},
+					},
+				},
+			},
+			want1: []corev1.VolumeMount{
+				{
+					Name:      "hive-catalog-conf-1416061474",
+					MountPath: "/opt/starrocks/fe/conf/hive-site.xml",
+					SubPath:   "hive-site.xml",
+				},
+				{
+					Name:      "hive-catalog-conf-1416553822",
+					MountPath: "/opt/starrocks/fe/conf/yarn-site.xml",
+					SubPath:   "yarn-site.xml",
+				},
+				{
+					Name:      "hive-catalog-conf-5162",
+					MountPath: "/opt/starrocks/fe/conf/core-site.xml",
+					SubPath:   "core-site.xml",
+				},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

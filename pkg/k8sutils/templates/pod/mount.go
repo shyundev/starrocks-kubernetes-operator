@@ -144,8 +144,13 @@ func MountConfigMaps(spec v1.SpecInterface, volumes []corev1.Volume, volumeMount
 	references []v1.ConfigMapReference) ([]corev1.Volume, []corev1.VolumeMount) {
 	prerequisitesOfChangingMode := spec != nil && (spec.GetCommand() != nil || spec.GetArgs() != nil)
 
-	for _, reference := range references {
-		volumeName := getVolumeName(v1.MountInfo(reference))
+	mountInfos := make([]v1.MountInfo, len(references))
+	for i := range references {
+		mountInfos[i] = v1.MountInfo(references[i])
+	}
+	volumeNames := getVolumeNames(mountInfos)
+	for i, reference := range references {
+		volumeName := volumeNames[i]
 		volumes = append(volumes, corev1.Volume{
 			Name: volumeName,
 			VolumeSource: corev1.VolumeSource{
@@ -198,8 +203,13 @@ func MountConfigMapInfo(volumes []corev1.Volume, volumeMounts []corev1.VolumeMou
 
 func MountSecrets(volumes []corev1.Volume, volumeMounts []corev1.VolumeMount,
 	references []v1.SecretReference) ([]corev1.Volume, []corev1.VolumeMount) {
-	for _, reference := range references {
-		volumeName := getVolumeName(v1.MountInfo(reference))
+	mountInfos := make([]v1.MountInfo, len(references))
+	for i := range references {
+		mountInfos[i] = v1.MountInfo(references[i])
+	}
+	volumeNames := getVolumeNames(mountInfos)
+	for i, reference := range references {
+		volumeName := volumeNames[i]
 		volumes = append(volumes, corev1.Volume{
 			Name: volumeName,
 			VolumeSource: corev1.VolumeSource{
@@ -215,6 +225,26 @@ func MountSecrets(volumes []corev1.Volume, volumeMounts []corev1.VolumeMount,
 		})
 	}
 	return volumes, volumeMounts
+}
+
+// getVolumeNames returns the volume name for each mountInfo.
+// Names that collide use the full hash instead of the 4-character suffix.
+func getVolumeNames(mountInfos []v1.MountInfo) []string {
+	names := make([]string, len(mountInfos))
+	count := make(map[string]int, len(mountInfos))
+	for i := range mountInfos {
+		names[i] = getVolumeName(mountInfos[i])
+		count[names[i]]++
+	}
+	if !config.VolumeNameWithHash {
+		return names
+	}
+	for i := range mountInfos {
+		if count[names[i]] > 1 {
+			names[i] = mountInfos[i].Name + "-" + hash.HashObject(mountInfos[i])
+		}
+	}
+	return names
 }
 
 func getVolumeName(mountInfo v1.MountInfo) string {
