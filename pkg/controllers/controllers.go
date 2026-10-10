@@ -2,12 +2,18 @@ package controllers
 
 import (
 	"context"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	srapi "github.com/StarRocks/starrocks-kubernetes-operator/pkg/apis/starrocks/v1"
 	"github.com/StarRocks/starrocks-kubernetes-operator/pkg/predicates"
@@ -51,8 +57,24 @@ func (r *StarRocksClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&corev1.Service{}).
+		// CN and other components wait until the FE service routes only to the current FE pods.
+		// The endpoints and endpointslices are not owned by the cluster, so map them to the cluster by the service name.
+		Watches(&source.Kind{Type: &corev1.Endpoints{}}, handler.EnqueueRequestsFromMapFunc(clusterOfFEService)).
+		Watches(&source.Kind{Type: &discoveryv1.EndpointSlice{}}, handler.EnqueueRequestsFromMapFunc(clusterOfFEService)).
 		WithEventFilter(predicates.NewGenericPredicates(r.denyList)).
 		Complete(r)
+}
+
+func clusterOfFEService(obj client.Object) []reconcile.Request {
+	serviceName := obj.GetName()
+	if _, ok := obj.(*discoveryv1.EndpointSlice); ok {
+		serviceName = obj.GetLabels()[discoveryv1.LabelServiceName]
+	}
+	clusterName, found := strings.CutSuffix(serviceName, "-fe-service")
+	if !found || clusterName == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: clusterName}}}
 }
 
 // SetupWarehouseReconciler

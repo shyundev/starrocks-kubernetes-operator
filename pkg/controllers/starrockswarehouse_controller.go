@@ -53,6 +53,7 @@ type StarRocksWarehouseReconciler struct {
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="core",resources=endpoints,verbs=get;watch;list
+// +kubebuilder:rbac:groups=discovery.k8s.io,resources=endpointslices,verbs=get;watch;list
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to

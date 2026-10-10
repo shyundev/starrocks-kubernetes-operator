@@ -22,7 +22,9 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
@@ -254,11 +256,81 @@ func CheckFEReady(ctx context.Context, k8sClient client.Client, clusterNamespace
 
 	for _, sub := range endpoints.Subsets {
 		if len(sub.Addresses) > 0 {
-			return true
+			return feServiceRoutesToCurrentPods(ctx, k8sClient, clusterNamespace, clusterName, &endpoints)
 		}
 	}
 
 	return false
+}
+
+// feServiceRoutesToCurrentPods checks that no ready address of the FE service, in its endpoints or endpointslices,
+// refers to a pod that does not belong to this cluster now. When a cluster is deleted and created again with the same
+// name, they can keep the IP of a deleted FE pod for a while, and the IP can be reused by a pod of another cluster.
+// Components that connect to the FE service before that would reach the other cluster.
+func feServiceRoutesToCurrentPods(ctx context.Context, k8sClient client.Client,
+	clusterNamespace, clusterName string, endpoints *corev1.Endpoints) bool {
+	logger := logr.FromContextOrDiscard(ctx)
+	var slices discoveryv1.EndpointSliceList
+	if err := k8sClient.List(ctx, &slices, client.InNamespace(clusterNamespace),
+		client.MatchingLabels{discoveryv1.LabelServiceName: endpoints.Name}); err != nil {
+		logger.Error(err, "list endpointslices of fe service failed", "serviceName", endpoints.Name)
+		return false
+	}
+
+	// The endpoints and endpointslices are updated by different controllers, so check both.
+	var targets []*corev1.ObjectReference
+	for _, sub := range endpoints.Subsets {
+		for _, address := range sub.Addresses {
+			targets = append(targets, address.TargetRef)
+		}
+	}
+	for i := range slices.Items {
+		for _, ep := range slices.Items[i].Endpoints {
+			if ep.Conditions.Ready == nil || *ep.Conditions.Ready {
+				targets = append(targets, ep.TargetRef)
+			}
+		}
+	}
+
+	var cluster *srapi.StarRocksCluster
+	for _, target := range targets {
+		if target == nil || target.Kind != "Pod" {
+			continue
+		}
+		if cluster == nil {
+			cluster = &srapi.StarRocksCluster{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: clusterNamespace, Name: clusterName}, cluster); err != nil {
+				logger.Error(err, "get cluster failed", "clusterName", clusterName)
+				return false
+			}
+		}
+		if !isPodOfCluster(ctx, k8sClient, target, cluster) {
+			logger.Info("fe service has an endpoint that is not a pod of the current cluster",
+				"serviceName", endpoints.Name, "pod", target.Name, "uid", target.UID)
+			return false
+		}
+	}
+	return true
+}
+
+// isPodOfCluster checks that the pod still exists with the UID of the reference and is controlled by a statefulset
+// that the cluster controls.
+func isPodOfCluster(ctx context.Context, k8sClient client.Client, ref *corev1.ObjectReference,
+	cluster *srapi.StarRocksCluster) bool {
+	var pod corev1.Pod
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: ref.Name}, &pod); err != nil ||
+		pod.UID != ref.UID {
+		return false
+	}
+	owner := metav1.GetControllerOf(&pod)
+	if owner == nil || owner.Kind != "StatefulSet" {
+		return false
+	}
+	var sts appsv1.StatefulSet
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: cluster.Namespace, Name: owner.Name}, &sts); err != nil {
+		return false
+	}
+	return sts.UID == owner.UID && metav1.IsControlledBy(&sts, cluster)
 }
 
 // CheckFEFullyRolledOut checks if the FE StatefulSet is fully rolled out.

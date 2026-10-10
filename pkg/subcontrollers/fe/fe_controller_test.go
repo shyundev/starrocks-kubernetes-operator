@@ -27,9 +27,11 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -388,6 +390,98 @@ func TestCheckFEFullyRolledOut(t *testing.T) {
 			if got := fe.CheckFEFullyRolledOut(tt.args.ctx, tt.args.k8sClient, tt.args.clusterNamespace, tt.args.clusterName); got != tt.want {
 				t.Errorf("CheckFEFullyRolledOut() = %v, want %v", got, tt.want)
 			}
+		})
+	}
+}
+
+func TestCheckFEReadyWithStaleAddresses(t *testing.T) {
+	ns, name := "default", "kube-starrocks"
+	cluster := &srapi.StarRocksCluster{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, UID: "cluster-uid"}}
+	cluster.SetGroupVersionKind(srapi.GroupVersion.WithKind("StarRocksCluster"))
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name + "-fe", Namespace: ns, UID: "sts-uid",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cluster, cluster.GroupVersionKind())}}}
+	sts.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind("StatefulSet"))
+	oldCluster := cluster.DeepCopy()
+	oldCluster.UID = "old-cluster-uid"
+	oldSts := sts.DeepCopy()
+	oldSts.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(oldCluster, cluster.GroupVersionKind())}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name + "-fe-0", Namespace: ns, UID: "pod-uid",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(sts, sts.GroupVersionKind())}}}
+	observerSts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name + "-fe-observer", Namespace: ns, UID: "observer-sts-uid",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cluster, cluster.GroupVersionKind())}}}
+	observerSts.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind("StatefulSet"))
+	observerPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name + "-fe-observer-0", Namespace: ns, UID: "observer-pod-uid",
+		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(observerSts, observerSts.GroupVersionKind())}}}
+	address := func(ip, podName string, podUID types.UID) corev1.EndpointAddress {
+		return corev1.EndpointAddress{IP: ip, TargetRef: &corev1.ObjectReference{Kind: "Pod", Namespace: ns, Name: podName, UID: podUID}}
+	}
+	endpoints := &corev1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{Name: name + "-fe-service", Namespace: ns},
+		Subsets:    []corev1.EndpointSubset{{Addresses: []corev1.EndpointAddress{address("10.0.0.1", pod.Name, pod.UID)}}},
+	}
+	staleEndpoints := endpoints.DeepCopy()
+	staleEndpoints.Subsets[0].Addresses = append(staleEndpoints.Subsets[0].Addresses, address("10.0.0.9", name+"-fe-1", "deleted-pod-uid"))
+	slice := func(sliceName, ip, podName string, podUID types.UID, ready bool) *discoveryv1.EndpointSlice {
+		return &discoveryv1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{Name: sliceName, Namespace: ns,
+				Labels: map[string]string{discoveryv1.LabelServiceName: name + "-fe-service"}},
+			AddressType: discoveryv1.AddressTypeIPv4,
+			Endpoints: []discoveryv1.Endpoint{{
+				Addresses:  []string{ip},
+				Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+				TargetRef:  &corev1.ObjectReference{Kind: "Pod", Namespace: ns, Name: podName, UID: podUID},
+			}},
+		}
+	}
+
+	tests := []struct {
+		name string
+		objs []runtime.Object
+		want bool
+	}{
+		{
+			name: "endpoint of the current fe pod",
+			objs: []runtime.Object{cluster, sts, pod, endpoints, slice("s1", "10.0.0.1", pod.Name, pod.UID, true)},
+			want: true,
+		},
+		{
+			name: "endpoints of pods of two statefulsets of the cluster",
+			objs: []runtime.Object{cluster, sts, pod, observerSts, observerPod, endpoints, slice("s1", "10.0.0.1", pod.Name, pod.UID, true),
+				slice("s2", "10.0.0.2", observerPod.Name, observerPod.UID, true)},
+			want: true,
+		},
+		{
+			name: "endpoint of a deleted fe pod is left in another endpointslice",
+			objs: []runtime.Object{cluster, sts, pod, endpoints, slice("s1", "10.0.0.1", pod.Name, pod.UID, true),
+				slice("s2", "10.0.0.9", name+"-fe-1", "deleted-pod-uid", true)},
+			want: false,
+		},
+		{
+			name: "endpoint of the fe pod that was replaced by a pod with the same name",
+			objs: []runtime.Object{cluster, sts, pod, endpoints, slice("s1", "10.0.0.9", pod.Name, "old-pod-uid", true)},
+			want: false,
+		},
+		{
+			name: "endpoint of the fe pod of the statefulset left by the deleted cluster",
+			objs: []runtime.Object{cluster, oldSts, pod, endpoints, slice("s1", "10.0.0.1", pod.Name, pod.UID, true)},
+			want: false,
+		},
+		{
+			name: "not ready endpoint of a deleted fe pod",
+			objs: []runtime.Object{cluster, sts, pod, endpoints, slice("s1", "10.0.0.1", pod.Name, pod.UID, true),
+				slice("s2", "10.0.0.9", name+"-fe-1", "deleted-pod-uid", false)},
+			want: true,
+		},
+		{
+			name: "endpoints keep the address of a deleted fe pod before the endpointslice is created",
+			objs: []runtime.Object{cluster, sts, pod, staleEndpoints},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k8sClient := fake.NewFakeClient(srapi.Scheme, tt.objs...)
+			require.Equal(t, tt.want, fe.CheckFEReady(context.Background(), k8sClient, ns, name))
 		})
 	}
 }
